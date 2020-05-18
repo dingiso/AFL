@@ -86,6 +86,20 @@
 #  define EXP_ST static
 #endif /* ^AFL_LIB */
 
+// uEmu
+#define AFL_uEmu_KEY 7777
+#define AFL_BITMAP_KEY 8888
+#define AFL_TESTCASE_KEY 9999
+#define TESTCASE_SIZE 2048
+
+struct AFL_data
+{
+	uint8_t AFL_round;
+	uint8_t AFL_input;
+	uint8_t AFL_return;
+    uint32_t AFL_size;
+};
+
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
@@ -146,13 +160,18 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
 
+// uEmu
+EXP_ST u8* test_cases;                /* SHM with instrumentation bitmap  */
+EXP_ST struct AFL_data *afl_con;
+
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
            virgin_crash[MAP_SIZE];    /* Bits we haven't seen in crashes  */
 
 static u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
-static s32 shm_id;                    /* ID of the SHM region             */
+//static s32 shm_id;                    /* ID of the SHM region             */
+static s32 AFL_shm_id, bitmap_shm_id, testcase_shm_id;
 
 static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
@@ -329,7 +348,8 @@ enum {
   /* 02 */ FAULT_CRASH,
   /* 03 */ FAULT_ERROR,
   /* 04 */ FAULT_NOINST,
-  /* 05 */ FAULT_NOBITS
+  /* 05 */ FAULT_NOBITS,
+  /* 06 */ END_uEmu
 };
 
 
@@ -1211,7 +1231,11 @@ static inline void classify_counts(u32* mem) {
 
 static void remove_shm(void) {
 
-  shmctl(shm_id, IPC_RMID, NULL);
+  // send termission signal to uEmu
+  afl_con->AFL_return = END_uEmu;
+  shmctl(bitmap_shm_id, IPC_RMID, NULL);
+  shmctl(testcase_shm_id, IPC_RMID, NULL);
+  shmctl(AFL_shm_id, IPC_RMID, NULL);
 
 }
 
@@ -1359,13 +1383,16 @@ EXP_ST void setup_shm(void) {
   memset(virgin_tmout, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
 
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
-
-  if (shm_id < 0) PFATAL("shmget() failed");
+  bitmap_shm_id = shmget((key_t)AFL_BITMAP_KEY, MAP_SIZE, IPC_CREAT | 0660);
+  if (bitmap_shm_id < 0) PFATAL("bitmap shmget() failed");
+  AFL_shm_id = shmget((key_t)AFL_uEmu_KEY, sizeof(struct AFL_data), IPC_CREAT | 0660);
+  if (AFL_shm_id < 0) PFATAL("AFL shmget() failed");
+  testcase_shm_id = shmget((key_t)AFL_TESTCASE_KEY, TESTCASE_SIZE, IPC_CREAT | 0660);
+  if (testcase_shm_id < 0) PFATAL("testcase shmget() failed");
 
   atexit(remove_shm);
 
-  shm_str = alloc_printf("%d", shm_id);
+  shm_str = alloc_printf("%d", bitmap_shm_id);
 
   /* If somebody is asking us to fuzz instrumented binaries in dumb mode,
      we don't want them to detect instrumentation, since we won't be sending
@@ -1376,9 +1403,13 @@ EXP_ST void setup_shm(void) {
 
   ck_free(shm_str);
 
-  trace_bits = shmat(shm_id, NULL, 0);
-  
+  trace_bits = shmat(bitmap_shm_id, NULL, 0);
+  afl_con = shmat(AFL_shm_id, NULL, 0);
+  test_cases = shmat(testcase_shm_id, NULL, 0);
+
   if (!trace_bits) PFATAL("shmat() failed");
+  if (!afl_con) PFATAL("shmat() failed");
+  if (!test_cases) PFATAL("shmat() failed");
 
 }
 
@@ -2269,216 +2300,100 @@ EXP_ST void init_forkserver(char** argv) {
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update trace_bits[]. */
 
-static u8 run_target(char** argv, u32 timeout) {
+static u8 run_target(char** argv, u32 timeout, u8* testcase, u32 size) {
 
-  static struct itimerval it;
-  static u32 prev_timed_out = 0;
-  static u64 exec_ms = 0;
+    static u32 prev_timed_out = 0;
+    static u64 exec_ms = 0;
+    //u32 tb4;
 
-  int status = 0;
-  u32 tb4;
-
-  child_timed_out = 0;
-
-  /* After this memset, trace_bits[] are effectively volatile, so we
+    child_timed_out = 0;
+    /* After this memset, trace_bits[] are effectively volatile, so we
      must prevent any earlier operations from venturing into that
      territory. */
-
-  memset(trace_bits, 0, MAP_SIZE);
-  MEM_BARRIER();
-
-  /* If we're running in "dumb" mode, we can't rely on the fork server
-     logic compiled into the target program, so we will just keep calling
-     execve(). There is a bit of code duplication between here and 
-     init_forkserver(), but c'est la vie. */
-
-  if (dumb_mode == 1 || no_forkserver) {
-
-    child_pid = fork();
-
-    if (child_pid < 0) PFATAL("fork() failed");
-
-    if (!child_pid) {
-
-      struct rlimit r;
-
-      if (mem_limit) {
-
-        r.rlim_max = r.rlim_cur = ((rlim_t)mem_limit) << 20;
-
-#ifdef RLIMIT_AS
-
-        setrlimit(RLIMIT_AS, &r); /* Ignore errors */
-
-#else
-
-        setrlimit(RLIMIT_DATA, &r); /* Ignore errors */
-
-#endif /* ^RLIMIT_AS */
-
-      }
-
-      r.rlim_max = r.rlim_cur = 0;
-
-      setrlimit(RLIMIT_CORE, &r); /* Ignore errors */
-
-      /* Isolate the process and configure standard descriptors. If out_file is
-         specified, stdin is /dev/null; otherwise, out_fd is cloned instead. */
-
-      setsid();
-
-      dup2(dev_null_fd, 1);
-      dup2(dev_null_fd, 2);
-
-      if (out_file) {
-
-        dup2(dev_null_fd, 0);
-
-      } else {
-
-        dup2(out_fd, 0);
-        close(out_fd);
-
-      }
-
-      /* On Linux, would be faster to use O_CLOEXEC. Maybe TODO. */
-
-      close(dev_null_fd);
-      close(out_dir_fd);
-      close(dev_urandom_fd);
-      close(fileno(plot_file));
-
-      /* Set sane defaults for ASAN if nothing else specified. */
-
-      setenv("ASAN_OPTIONS", "abort_on_error=1:"
-                             "detect_leaks=0:"
-                             "symbolize=0:"
-                             "allocator_may_return_null=1", 0);
-
-      setenv("MSAN_OPTIONS", "exit_code=" STRINGIFY(MSAN_ERROR) ":"
-                             "symbolize=0:"
-                             "msan_track_origins=0", 0);
-
-      execv(target_path, argv);
-
-      /* Use a distinctive bitmap value to tell the parent about execv()
-         falling through. */
-
-      *(u32*)trace_bits = EXEC_FAIL_SIG;
-      exit(0);
-
+    if (afl_con->AFL_return == FAULT_ERROR) {
+        return FAULT_ERROR;
     }
 
-  } else {
-
-    s32 res;
-
-    /* In non-dumb mode, we have the fork server up and running, so simply
-       tell it to have at it, and then read back PID. */
-
-    if ((res = write(fsrv_ctl_fd, &prev_timed_out, 4)) != 4) {
-
-      if (stop_soon) return 0;
-      RPFATAL(res, "Unable to request new process from fork server (OOM?)");
-
+    if (size >= TESTCASE_SIZE) {
+        printf("##################################invalid testcase size %d\n", size);
+        return FAULT_NONE;
     }
 
-    if ((res = read(fsrv_st_fd, &child_pid, 4)) != 4) {
+    while (afl_con->AFL_input == 1) { // wait for result
+        printf("##################################should not be here\n");
+        usleep(1);
+    };
 
-      if (stop_soon) return 0;
-      RPFATAL(res, "Unable to request new process from fork server (OOM?)");
+    memset(test_cases, 0, TESTCASE_SIZE);
+    memset(trace_bits, 0, MAP_SIZE);
 
-    }
+    afl_con->AFL_input = 1;
+    MEM_BARRIER();
+    memcpy(test_cases, testcase, size);
+    afl_con->AFL_size = size;
 
-    if (child_pid <= 0) FATAL("Fork server is misbehaving (OOM?)");
+    while (afl_con->AFL_input == 1) { // wait for result
+        if (afl_con->AFL_return > 0) {
+            MEM_BARRIER();
+            switch (afl_con->AFL_return) {
+                case FAULT_CRASH: {
+                    total_execs++;
+                    afl_con->AFL_input = 0;
+                    afl_con->AFL_return = 0;
+                    return FAULT_CRASH;
+                }
+                case FAULT_ERROR: {
+                    total_execs++;
+                    afl_con->AFL_input = 0;
+                    afl_con->AFL_return = 0;
+                    return FAULT_ERROR;
+                }
+                case FAULT_TMOUT: {
+                    afl_con->AFL_input = 0;
+                    child_timed_out = 1;
+                    break;
+                }
+                default:
+                    afl_con->AFL_return = 0;
+                    break;
+            }
+        }
+        usleep(1);
+    };
 
-  }
+    total_execs++;
 
-  /* Configure timeout, as requested by user, then wait for child to terminate. */
-
-  it.it_value.tv_sec = (timeout / 1000);
-  it.it_value.tv_usec = (timeout % 1000) * 1000;
-
-  setitimer(ITIMER_REAL, &it, NULL);
-
-  /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
-
-  if (dumb_mode == 1 || no_forkserver) {
-
-    if (waitpid(child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
-
-  } else {
-
-    s32 res;
-
-    if ((res = read(fsrv_st_fd, &status, 4)) != 4) {
-
-      if (stop_soon) return 0;
-      RPFATAL(res, "Unable to communicate with fork server (OOM?)");
-
-    }
-
-  }
-
-  if (!WIFSTOPPED(status)) child_pid = 0;
-
-  getitimer(ITIMER_REAL, &it);
-  exec_ms = (u64) timeout - (it.it_value.tv_sec * 1000 +
-                             it.it_value.tv_usec / 1000);
-
-  it.it_value.tv_sec = 0;
-  it.it_value.tv_usec = 0;
-
-  setitimer(ITIMER_REAL, &it, NULL);
-
-  total_execs++;
-
-  /* Any subsequent operations on trace_bits must not be moved by the
+    /* Any subsequent operations on trace_bits must not be moved by the
      compiler below this point. Past this location, trace_bits[] behave
      very normally and do not have to be treated as volatile. */
 
-  MEM_BARRIER();
+    MEM_BARRIER();
 
-  tb4 = *(u32*)trace_bits;
+
+    if (afl_con->AFL_return == FAULT_ERROR) {
+        return FAULT_ERROR;
+    }
 
 #ifdef __x86_64__
-  classify_counts((u64*)trace_bits);
+    classify_counts((u64*)trace_bits);
 #else
-  classify_counts((u32*)trace_bits);
+    classify_counts((u32*)trace_bits);
 #endif /* ^__x86_64__ */
 
-  prev_timed_out = child_timed_out;
+    prev_timed_out = child_timed_out;
 
-  /* Report outcome to caller. */
+    if (child_timed_out) {
+        printf("FAULT TIMEOUT \n");
+        afl_con->AFL_return = 0;
+        return FAULT_TMOUT;
+    }
+    /* It makes sense to account for the slowest units only if the testcase was run
+    under the user defined timeout. */
+    if (!(timeout > exec_tmout) && (slowest_exec_ms < exec_ms)) {
+        slowest_exec_ms = exec_ms;
+    }
 
-  if (WIFSIGNALED(status) && !stop_soon) {
-
-    kill_signal = WTERMSIG(status);
-
-    if (child_timed_out && kill_signal == SIGKILL) return FAULT_TMOUT;
-
-    return FAULT_CRASH;
-
-  }
-
-  /* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
-     must use a special exit code. */
-
-  if (uses_asan && WEXITSTATUS(status) == MSAN_ERROR) {
-    kill_signal = 0;
-    return FAULT_CRASH;
-  }
-
-  if ((dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
-    return FAULT_ERROR;
-
-  /* It makes sense to account for the slowest units only if the testcase was run
-  under the user defined timeout. */
-  if (!(timeout > exec_tmout) && (slowest_exec_ms < exec_ms)) {
-    slowest_exec_ms = exec_ms;
-  }
-
-  return FAULT_NONE;
+    return FAULT_NONE;
 
 }
 
@@ -2595,7 +2510,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     write_to_testcase(use_mem, q->len);
 
-    fault = run_target(argv, use_tmout);
+    fault = run_target(argv, use_tmout, use_mem, q->len);
 
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
@@ -2604,6 +2519,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     if (!dumb_mode && !stage_cur && !count_bytes(trace_bits)) {
       fault = FAULT_NOINST;
+      printf("FAULT should not be here \n");
       goto abort_calibration;
     }
 
@@ -2691,6 +2607,10 @@ abort_calibration:
   stage_max  = old_sm;
 
   if (!first_run) show_stats();
+
+      if (fault != FAULT_NONE) {
+          printf("FAULTcase2 = 0x%x stop = 0x%x \n", fault, stop_soon);
+      }
 
   return fault;
 
@@ -3181,6 +3101,15 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     if (res == FAULT_ERROR)
       FATAL("Unable to execute target application");
 
+    if (res == FAULT_CRASH) {
+        total_crashes++;
+        if (has_new_bits(virgin_crash)) unique_crashes++;
+    }
+    if (res == FAULT_TMOUT) {
+        total_tmouts++;
+        if (has_new_bits(virgin_tmout)) unique_tmouts++;
+    }
+
     fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
     if (fd < 0) PFATAL("Unable to create '%s'", fn);
     ck_write(fd, mem, len, fn);
@@ -3193,6 +3122,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   switch (fault) {
 
     case FAULT_TMOUT:
+		printf("TIME_OUT = %d\n", len);
 
       /* Timeouts are not very interesting, but we're still obliged to keep
          a handful of samples. We use the presence of new bits in the
@@ -3225,7 +3155,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
         u8 new_fault;
         write_to_testcase(mem, len);
-        new_fault = run_target(argv, hang_tmout);
+		//printf("len time out = %d\n", len);
+        new_fault = run_target(argv, hang_tmout, mem, len);
 
         /* A corner case that one user reported bumping into: increasing the
            timeout actually uncovers a crash. Make sure we don't discard it if
@@ -4543,7 +4474,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
       write_with_gap(in_buf, q->len, remove_pos, trim_avail);
 
-      fault = run_target(argv, exec_tmout);
+      fault = run_target(argv, exec_tmout, in_buf, q->len);
       trim_execs++;
 
       if (stop_soon || fault == FAULT_ERROR) goto abort_trimming;
@@ -4618,6 +4549,13 @@ abort_trimming:
 
 }
 
+void save_seed(u8* buf, u32 size){
+    for (int i=0; i < size; i++) {
+        printf("%02X ", *(buf + i));
+    }
+    putchar('\n');
+
+}
 
 /* Write a modified test case, run program, process results. Handle
    error conditions, returning 1 if it's time to bail out. This is
@@ -4636,7 +4574,10 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   write_to_testcase(out_buf, len);
 
-  fault = run_target(argv, exec_tmout);
+  //printf("len1 = %d\n", len);
+  //save_seed(out_buf, len);
+
+  fault = run_target(argv, exec_tmout, out_buf, len);
 
   if (stop_soon) return 1;
 
@@ -6764,8 +6705,8 @@ static void sync_fuzzers(char** argv) {
            errors and save the test case. */
 
         write_to_testcase(mem, st.st_size);
-
-        fault = run_target(argv, exec_tmout);
+		//printf("len2 = %ld\n", st.st_size);
+        fault = run_target(argv, exec_tmout, mem, st.st_size);
 
         if (stop_soon) return;
 
@@ -7953,7 +7894,8 @@ int main(int argc, char** argv) {
 
   }
 
-  if (getenv("AFL_NO_FORKSRV"))    no_forkserver    = 1;
+  //if (getenv("AFL_NO_FORKSRV"))    no_forkserver    = 1;
+  no_forkserver    = 1;
   if (getenv("AFL_NO_CPU_RED"))    no_cpu_meter_red = 1;
   if (getenv("AFL_NO_ARITH"))      no_arith         = 1;
   if (getenv("AFL_SHUFFLE_QUEUE")) shuffle_queue    = 1;
@@ -8008,7 +7950,8 @@ int main(int argc, char** argv) {
 
   if (!out_file) setup_stdio_file();
 
-  check_binary(argv[optind]);
+  //check_binary(argv[optind]); //check binary name
+  //printf("no fork = %d\n", no_forkserver);
 
   start_time = get_cur_time();
 

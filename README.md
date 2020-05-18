@@ -7,6 +7,18 @@ Originally developed by Michal Zalewski <lcamtuf@google.com>.
 See [QuickStartGuide.txt](docs/QuickStartGuide.txt) if you don't have time to read
 this file.
 
+## 0) AFL with uEmu
+Note:
+1.uEmu only uses AFL to generate test-cases.
+2.The largest testcase is 2k by defalut, you can change the marco *TESTCASE_SIZE* for larger testcases.
+
+```shell
+make
+make install
+echo core >/proc/sys/kernel/core_pattern
+afl-fuzz -i fuzz_in -o fuzz_out uEmu
+```
+
 ## 1) Challenges of guided fuzzing
 
 Fuzzing is one of the most powerful and proven strategies for identifying
