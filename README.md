@@ -1,3 +1,6 @@
+#AFL with IoTS2E
+afl-fuzz -i fuzz_in -o fuzz_out IoTS2E
+
 # american fuzzy lop
 
 [![Build Status](https://travis-ci.org/google/AFL.svg?branch=master)](https://travis-ci.org/google/AFL)

@@ -10,3 +10,5 @@ afl-gotcpu
 afl-showmap
 afl-tmin
 as
+cscope*
+
