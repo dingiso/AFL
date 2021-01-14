@@ -347,7 +347,8 @@ enum {
   /* 02 */ FAULT_CRASH,
   /* 03 */ FAULT_ERROR,
   /* 04 */ FAULT_NOINST,
-  /* 05 */ FAULT_NOBITS
+  /* 05 */ FAULT_NOBITS,
+  /* 06 */ END_uEmu
 };
 
 
@@ -1229,6 +1230,8 @@ static inline void classify_counts(u32* mem) {
 
 static void remove_shm(void) {
 
+  // send termission signal to uEmu
+  afl_con->AFL_return = END_uEmu;
   shmctl(bitmap_shm_id, IPC_RMID, NULL);
   shmctl(testcase_shm_id, IPC_RMID, NULL);
   shmctl(AFL_shm_id, IPC_RMID, NULL);
