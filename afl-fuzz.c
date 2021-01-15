@@ -2313,43 +2313,6 @@ static u8 run_target(char** argv, u32 timeout, u8* testcase, u32 size) {
         return FAULT_ERROR;
     }
 
-/*     if (afl_con->AFL_return > 0) { */
-        /* switch (afl_con->AFL_return) { */
-            /* case FAULT_CRASH: { */
-                /* if (keep_crash_count < 1) { */
-                    /* keep_crash_count++; */
-                    /* printf("\n #######********#FAULT count crash %d \n", keep_crash_count); */
-                    /* return FAULT_CRASH; */
-                /* } else { */
-                    /* keep_crash_count = 0; */
-                    /* afl_con->AFL_return = 0; */
-                    /* break; */
-                /* } */
-            /* } */
-            /* case FAULT_ERROR: { */
-                /* return FAULT_ERROR; */
-            /* } */
-            /* case FAULT_TMOUT: { */
-                /* if (keep_hang_count < 1) { */
-                    /* prev_timed_out = 1; */
-                    /* keep_hang_count++; */
-                    /* printf("\n #######********#FAULT count hang %d \n", keep_hang_count); */
-                    /* return FAULT_TMOUT; */
-                /* } else { */
-                    /* keep_hang_count = 0; */
-                    /* afl_con->AFL_return = 0; */
-                    /* break; */
-                /* } */
-            /* } */
-            /* default: */
-                /* afl_con->AFL_return = 0; */
-                /* break; */
-        /* } */
-    /* } else { */
-        /* keep_crash_count = 0; */
-        /* keep_hang_count = 0; */
-    /* } */
-
     if (size >= TESTCASE_SIZE) {
         printf("##################################invalid testcase size %d\n", size);
         return FAULT_NONE;
@@ -2370,7 +2333,6 @@ static u8 run_target(char** argv, u32 timeout, u8* testcase, u32 size) {
 
     while (afl_con->AFL_input == 1) { // wait for result
         if (afl_con->AFL_return > 0) {
-            printf(" \n!!!!!!!!!!! !!!!!!!!!!!!!!!!!FAULT1  0x%x \n", afl_con->AFL_return);
             MEM_BARRIER();
             switch (afl_con->AFL_return) {
                 case FAULT_CRASH: {
@@ -2398,37 +2360,6 @@ static u8 run_target(char** argv, u32 timeout, u8* testcase, u32 size) {
         usleep(1);
     };
 
-/*     afl_con->AFL_round = 0; */
-    /* while (afl_con->AFL_round == 0) { */
-        /* usleep(1); */
-        /* if (afl_con->AFL_return > 0) { */
-            /* printf(" \n should not !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!FAULT2  0x%x \n", afl_con->AFL_return); */
-            /* MEM_BARRIER(); */
-            /* switch (afl_con->AFL_return) { */
-                /* case FAULT_CRASH: { */
-                    /* total_execs++; */
-                    /* afl_con->AFL_input = 0; */
-                    /* afl_con->AFL_return = 0; */
-                    /* return FAULT_CRASH; */
-                /* } */
-                /* case FAULT_ERROR: { */
-                    /* total_execs++; */
-                    /* afl_con->AFL_input = 0; */
-                    /* afl_con->AFL_return = 0; */
-                    /* return FAULT_ERROR; */
-                /* } */
-                /* case FAULT_TMOUT: { */
-                    /* afl_con->AFL_input = 0; */
-                    /* child_timed_out = 1; */
-                    /* break; */
-                /* } */
-                /* default: */
-                    /* afl_con->AFL_return = 0; */
-                    /* break; */
-            /* } */
-        /* } */
-    /* }; */
-
     total_execs++;
 
     /* Any subsequent operations on trace_bits must not be moved by the
@@ -2441,24 +2372,6 @@ static u8 run_target(char** argv, u32 timeout, u8* testcase, u32 size) {
     if (afl_con->AFL_return == FAULT_ERROR) {
         return FAULT_ERROR;
     }
-
-    //tb4 = *(u32*)trace_bits;
-
-    /* if (afl_con->AFL_return > 0) { */
-        /* printf("FAULT 2 0x%x \n", afl_con->AFL_return); */
-        /* switch (afl_con->AFL_return) { */
-            /* case FAULT_CRASH: */
-                /* return FAULT_CRASH; */
-            /* case FAULT_ERROR: */
-                /* return FAULT_ERROR; */
-            /* case FAULT_TMOUT: { */
-                    /* child_timed_out = 1; */
-                    /* break; */
-            /* } */
-        /* } */
-        /* afl_con->AFL_return = 0; */
-    /* } */
-
 
 #ifdef __x86_64__
     classify_counts((u64*)trace_bits);
