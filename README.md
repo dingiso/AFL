@@ -1,6 +1,3 @@
-#AFL with IoTS2E
-afl-fuzz -i fuzz_in -o fuzz_out IoTS2E
-
 # american fuzzy lop
 
 [![Build Status](https://travis-ci.org/google/AFL.svg?branch=master)](https://travis-ci.org/google/AFL)
@@ -9,6 +6,16 @@ Originally developed by Michal Zalewski <lcamtuf@google.com>.
 
 See [QuickStartGuide.txt](docs/QuickStartGuide.txt) if you don't have time to read
 this file.
+
+## 0) AFL with uEmu
+Note that uEmu only uses AFL to generate test-cases.
+
+```shell
+make
+make install
+echo core >/proc/sys/kernel/core_pattern
+afl-fuzz -i fuzz_in -o fuzz_out uEmu
+```
 
 ## 1) Challenges of guided fuzzing
 
