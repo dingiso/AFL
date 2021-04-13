@@ -7223,8 +7223,8 @@ static void check_crash_handling(void) {
        "    launchctl unload -w ${SL}/LaunchAgents/${PL}.plist\n"
        "    sudo launchctl unload -w ${SL}/LaunchDaemons/${PL}.Root.plist\n");
 
-  if (!getenv("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES"))
-    FATAL("Crash reporter detected");
+  // if (!getenv("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES"))
+  //  FATAL("Crash reporter detected");
 
 #else
 
@@ -7251,8 +7251,8 @@ static void check_crash_handling(void) {
 
          "    echo core >/proc/sys/kernel/core_pattern\n");
 
-    if (!getenv("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES"))
-      FATAL("Pipe at the beginning of 'core_pattern'");
+    // if (!getenv("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES"))
+    //  FATAL("Pipe at the beginning of 'core_pattern'");
 
   }
  
