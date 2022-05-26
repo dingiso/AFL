@@ -97,7 +97,7 @@ struct AFL_data
 	uint8_t AFL_round;
 	uint8_t AFL_input;
 	uint8_t AFL_return;
-    uint32_t AFL_size;
+  uint32_t AFL_size;
 };
 
 /* Lots of globals, but mostly for the status UI and other things where it
@@ -2327,10 +2327,10 @@ static u8 run_target(char** argv, u32 timeout, u8* testcase, u32 size) {
     memset(test_cases, 0, TESTCASE_SIZE);
     memset(trace_bits, 0, MAP_SIZE);
 
-    afl_con->AFL_input = 1;
     MEM_BARRIER();
     memcpy(test_cases, testcase, size);
     afl_con->AFL_size = size;
+    afl_con->AFL_input = 1;
 
     while (afl_con->AFL_input == 1) { // wait for result
         if (afl_con->AFL_return > 0) {
